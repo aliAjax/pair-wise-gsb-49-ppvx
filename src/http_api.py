@@ -4,7 +4,7 @@ import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .domain import Actor, DomainError, PermissionDenied, ValidationError
 
@@ -12,6 +12,8 @@ from .domain import Actor, DomainError, PermissionDenied, ValidationError
 RECORD_RE = re.compile(r"^/api/records/(\d+)$")
 ACTION_RE = re.compile(r"^/api/records/(\d+)/actions/([a-z_]+)$")
 AUDIT_RE = re.compile(r"^/api/records/(\d+)/audit$")
+EVENT_LEDGER_RE = re.compile(r"^/api/events/([^/]+)/ledger$")
+EVENT_REBUILD_RE = re.compile(r"^/api/events/([^/]+)/rebuild$")
 
 
 def make_handler(service: Any, static_dir: Path):
@@ -73,8 +75,8 @@ def make_handler(service: Any, static_dir: Path):
                     return
                 if parsed.path == "/api/records":
                     query = parse_qs(parsed.query)
-                    records = service.list_records(self._actor(), state=query.get("state", [None])[0], limit=int(query.get("limit", ["100"])[0]))
-                    self._send(200, {"items": records})
+                    result = service.list_records(self._actor(), state=query.get("state", [None])[0], limit=int(query.get("limit", ["100"])[0]))
+                    self._send(200, result)
                     return
                 match = RECORD_RE.match(parsed.path)
                 if match:
@@ -83,6 +85,10 @@ def make_handler(service: Any, static_dir: Path):
                 match = AUDIT_RE.match(parsed.path)
                 if match:
                     self._send(200, {"items": service.timeline(self._actor(), int(match.group(1)))})
+                    return
+                match = EVENT_LEDGER_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.event_ledger(self._actor(), unquote(match.group(1))))
                     return
                 if parsed.path == "/api/stats":
                     self._send(200, service.stats(self._actor()))
@@ -106,6 +112,13 @@ def make_handler(service: Any, static_dir: Path):
                         raise ValidationError("expected_version必须是整数")
                     record = service.act(self._actor(), int(match.group(1)), version, match.group(2), body.get("data", {}))
                     self._send(200, record)
+                    return
+                match = EVENT_REBUILD_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.rebuild_event(self._actor(), unquote(match.group(1))))
+                    return
+                if parsed.path == "/api/backfill":
+                    self._send(200, service.backfill(self._actor()))
                     return
                 self._send(404, {"error": "not_found", "message": "路径不存在"})
             except Exception as exc:

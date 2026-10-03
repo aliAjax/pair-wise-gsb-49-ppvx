@@ -1,13 +1,13 @@
 """再保险合约与巨灾暴露管理领域规则与状态转换。"""
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any, Dict, Tuple
 
 from .domain import Actor, Conflict, ValidationError, boolean, choice, integer, number, text, text_list
 
 
 INITIAL_STATE = "quoted"
 CREATE_ROLES = {'underwriter'}
-ACTION_ROLES = {'bind': {'underwriter'}, 'submit_claim': {'claims_officer'}, 'calculate': {'claims_officer'}, 'settle': {'finance'}, 'reject': {'finance', 'claims_officer'}}
-TRANSITIONS = {'bind': {'quoted': 'bound'}, 'submit_claim': {'bound': 'claim_submitted'}, 'calculate': {'claim_submitted': 'calculated'}, 'settle': {'calculated': 'settled'}, 'reject': {'claim_submitted': 'rejected', 'calculated': 'rejected'}}
+ACTION_ROLES = {'bind': {'underwriter'}, 'submit_claim': {'claims_officer'}, 'calculate': {'claims_officer'}, 'settle': {'finance'}, 'reject': {'finance', 'claims_officer'}, 'withdraw': {'finance', 'claims_officer'}}
+TRANSITIONS = {'bind': {'quoted': 'bound'}, 'submit_claim': {'bound': 'claim_submitted'}, 'calculate': {'claim_submitted': 'calculated'}, 'settle': {'calculated': 'settled'}, 'reject': {'claim_submitted': 'rejected', 'calculated': 'rejected'}, 'withdraw': {'claim_submitted': 'withdrawn', 'calculated': 'withdrawn', 'settled': 'withdrawn'}}
 
 
 class DomainRules:
@@ -49,18 +49,6 @@ class DomainRules:
         p["net_retention"] = round(float(p["loss_amount"]) - recovery, 2)
         return p
 
-    def check_create_conflicts(self, payload: Dict[str, Any], existing: Iterable[Dict[str, Any]]) -> None:
-        event_id = payload.get("event_id")
-        used = float(payload.get("aggregate_prior", 0))
-        for item in existing:
-            if item["state"] in {"rejected"} or item["payload"].get("event_id") != event_id:
-                continue
-            used += float(item["payload"].get("recoverable_amount", 0))
-        capacity = float(payload["layer_width"]) * float(payload["cession_pct"])
-        projected = min(max(0.0, float(payload["loss_amount"]) - float(payload["attachment"])), float(payload["layer_width"])) * float(payload["cession_pct"])
-        if used + projected > capacity + 0.01:
-            raise Conflict("同一事件累计摊回超过再保容量")
-
     def require_transition(self, record: Dict[str, Any], action: str) -> str:
         allowed = TRANSITIONS.get(action, {}).get(record["state"])
         if allowed is None:
@@ -78,7 +66,10 @@ class DomainRules:
             summary = "再保合约已绑定"
         elif action == "submit_claim":
             changes["claim_number"] = text(data, "claim_number")
-            changes["claim_event_id"] = text(data, "event_id")
+            claim_event = text(data, "event_id")
+            if p.get("event_id") and claim_event != p["event_id"]:
+                raise ValidationError("赔案事件必须与合约巨灾事件一致")
+            changes["claim_event_id"] = claim_event
             summary = "赔案已提交"
         elif action == "calculate":
             loss = number(data, "approved_loss", 0)
@@ -96,5 +87,8 @@ class DomainRules:
         elif action == "reject":
             changes["reject_reason"] = text(data, "reject_reason")
             summary = "赔案已拒绝"
+        elif action == "withdraw":
+            changes["withdraw_reason"] = text(data, "reason")
+            summary = "赔案已撤回，占用容量已释放"
         p.update(changes)
         return new_state, p, summary or ("已执行%s" % action)
