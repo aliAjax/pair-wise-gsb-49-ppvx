@@ -12,6 +12,11 @@ from .domain import Actor, DomainError, PermissionDenied, ValidationError
 RECORD_RE = re.compile(r"^/api/records/(\d+)$")
 ACTION_RE = re.compile(r"^/api/records/(\d+)/actions/([a-z_]+)$")
 AUDIT_RE = re.compile(r"^/api/records/(\d+)/audit$")
+TREATY_RE = re.compile(r"^/api/ledger/treaties/(\d+)$")
+TREATY_CLAIMS_RE = re.compile(r"^/api/ledger/treaties/(\d+)/claims$")
+TREATY_FACTS_RE = re.compile(r"^/api/ledger/treaties/(\d+)/facts$")
+TREATY_REBUILD_RE = re.compile(r"^/api/ledger/treaties/(\d+)/rebuild$")
+CLAIM_FACTS_RE = re.compile(r"^/api/ledger/claims/(\d+)/facts$")
 
 
 def make_handler(service: Any, static_dir: Path):
@@ -71,6 +76,20 @@ def make_handler(service: Any, static_dir: Path):
                     page = (static_dir / "index.html").read_bytes()
                     self._send(200, page, "text/html; charset=utf-8")
                     return
+                if parsed.path == "/api/ledger/treaties":
+                    self._send(200, {"items": service.list_treaties(self._actor())})
+                    return
+                if parsed.path == "/api/ledger/stats":
+                    self._send(200, service.ledger_stats(self._actor()))
+                    return
+                match = TREATY_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.get_treaty_detail(self._actor(), int(match.group(1))))
+                    return
+                match = TREATY_FACTS_RE.match(parsed.path)
+                if match:
+                    self._send(200, {"items": service.treaty_facts(self._actor(), int(match.group(1)))})
+                    return
                 if parsed.path == "/api/records":
                     query = parse_qs(parsed.query)
                     records = service.list_records(self._actor(), state=query.get("state", [None])[0], limit=int(query.get("limit", ["100"])[0]))
@@ -98,6 +117,26 @@ def make_handler(service: Any, static_dir: Path):
                 if parsed.path == "/api/records":
                     record = service.create(self._actor(), body.get("reference", ""), body.get("data", {}))
                     self._send(201, record)
+                    return
+                if parsed.path == "/api/ledger/treaties":
+                    self._send(201, service.create_treaty(self._actor(), body))
+                    return
+                if parsed.path == "/api/ledger/backfill":
+                    self._send(200, service.backfill_legacy(self._actor()))
+                    return
+                match = TREATY_CLAIMS_RE.match(parsed.path)
+                if match:
+                    result = service.submit_claim(self._actor(), int(match.group(1)), body)
+                    self._send(200 if result.get("duplicate") else 201, result)
+                    return
+                match = TREATY_REBUILD_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.rebuild_treaty(self._actor(), int(match.group(1))))
+                    return
+                match = CLAIM_FACTS_RE.match(parsed.path)
+                if match:
+                    result = service.append_fact(self._actor(), int(match.group(1)), body.get("fact_type", ""), body.get("data", {}), body.get("idempotency_key"))
+                    self._send(200, result)
                     return
                 match = ACTION_RE.match(parsed.path)
                 if match:

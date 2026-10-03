@@ -28,6 +28,11 @@ class PermissionDenied(DomainError):
     code = "permission_denied"
 
 
+class LedgerWriteError(DomainError):
+    status = 500
+    code = "ledger_write_failed"
+
+
 @dataclass(frozen=True)
 class Actor:
     user_id: str
